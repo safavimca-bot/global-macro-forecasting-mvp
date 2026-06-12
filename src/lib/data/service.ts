@@ -5,7 +5,7 @@ import { latestValue, riskEntries, seriesFor } from "../format";
 import { classifyMacroRegime } from "../regime";
 import { calculateRiskScores } from "../scoring";
 import type { CountryCode, CountryMacroView, Observation } from "../types";
-import { dataAdapters } from "./adapters";
+import { LIVE_SOURCE_PRIORITY_BY_INDICATOR, dataAdapters } from "./adapters";
 
 export async function getCountryMacroView(countryCode: string, options: { useOpenAI?: boolean } = {}): Promise<CountryMacroView | undefined> {
   const country = getCountry(countryCode);
@@ -110,7 +110,9 @@ export function chartDataFromScores(view: CountryMacroView) {
 export function sourceCoverageRows() {
   return INDICATORS.map((indicator) => ({
     ...indicator,
-    coverage: indicator.source.includes("demo") ? "All MVP countries in demo cache" : "Live where adapter and country coverage are available"
+    coverage: indicator.source.includes("demo")
+      ? "All MVP countries in demo cache"
+      : `Live where adapter and country coverage are available. Preferred source order: ${(LIVE_SOURCE_PRIORITY_BY_INDICATOR[indicator.id] ?? ["Configured live adapter", "Demo fallback"]).join(" -> ")}`
   }));
 }
 
