@@ -36,7 +36,7 @@ export default async function DataSourcesPage() {
         </div>
         <div className="rounded-md border border-signal-amber/30 bg-signal-amber/10 p-4">
           <p className="text-sm font-semibold text-signal-amber">degraded</p>
-          <p className="mt-2 text-sm leading-6 text-slate-300">Live data did not load or a key is missing, so demo fallback is being used.</p>
+          <p className="mt-2 text-sm leading-6 text-slate-300">Live data did not load, a key is missing, or a remote source blocked server access, so demo fallback is being used.</p>
         </div>
         <div className="rounded-md border border-signal-red/30 bg-signal-red/10 p-4">
           <p className="text-sm font-semibold text-signal-red">unavailable</p>
