@@ -26,7 +26,7 @@ export type Frequency = "daily" | "weekly" | "monthly" | "quarterly" | "annual";
 
 export type DataMode = "live" | "mixed" | "demo";
 
-export type AdapterStatusCategory = "healthy" | "degraded" | "mapping-error" | "parser-error" | "network-error" | "unmapped";
+export type AdapterStatusCategory = "healthy" | "degraded" | "mapping-error" | "parser-error" | "network-error" | "access-restricted" | "unmapped";
 
 export interface Country {
   code: CountryCode;
