@@ -56,7 +56,12 @@ describe("ImfAdapter", () => {
 
     expect(fetchSpy).toHaveBeenCalledWith(
       "https://www.imf.org/external/datamapper/api/v1/NGDP_RPCH/USA",
-      expect.objectContaining({ headers: { Accept: "application/json" } })
+      expect.objectContaining({
+        headers: {
+          Accept: "application/json",
+          "User-Agent": "Mozilla/5.0 compatible research dashboard"
+        }
+      })
     );
     expect(rows).toHaveLength(2);
     expect(rows[0].source).toBe("IMF DataMapper API");
@@ -101,7 +106,33 @@ describe("ImfAdapter", () => {
     expect(health.responseContentType).toBe("application/json; charset=utf-8");
     expect(health.latestDataDate).toBe("2025");
     expect(health.latestObservation).toEqual({ date: "2025", value: 2.1, unit: "% y/y" });
-    expect(health.adapterDetails?.[0]).toContain("latest 2025 = 2.1");
+    expect(health.adapterDetails?.[0]).toContain("Alternative source strategy");
+    expect(health.adapterDetails?.some((detail) => detail.includes("latest 2025 = 2.1"))).toBe(true);
+  });
+
+  it("treats IMF HTTP 403 as a known server access restriction and does not retry other IMF indicators", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      imfResponse("<html><body>Forbidden</body></html>", {
+        ok: false,
+        status: 403,
+        statusText: "Forbidden",
+        contentType: "text/html"
+      })
+    );
+
+    const health = await new ImfAdapter().healthCheck();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(health.status).toBe("degraded");
+    expect(health.statusCategory).toBe("access-restricted");
+    expect(health.mode).toBe("demo");
+    expect(health.liveDemoStatus).toBe("demo");
+    expect(health.httpStatus).toBe("HTTP 403 Forbidden");
+    expect(health.responseContentType).toBe("text/html");
+    expect(health.responseBodyPreview).toContain("Forbidden");
+    expect(health.notes).toBe("IMF DataMapper blocked the server request with HTTP 403. Demo fallback is active.");
+    expect(health.fallbackReason).toBe("IMF DataMapper blocked the server request with HTTP 403. Demo fallback is active.");
+    expect(health.adapterDetails?.[0]).toContain("prefer FRED");
   });
 
   it("reports invalid IMF endpoint failures with response diagnostics", async () => {
