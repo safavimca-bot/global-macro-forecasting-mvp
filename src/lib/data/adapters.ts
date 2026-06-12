@@ -10,6 +10,16 @@ import {
 } from "./oecd-mappings";
 
 const HEALTH_REVALIDATE_SECONDS = 60 * 15;
+const IMF_BLOCKED_MESSAGE = "IMF DataMapper blocked the server request with HTTP 403. Demo fallback is active.";
+
+export const LIVE_SOURCE_PRIORITY_BY_INDICATOR: Partial<Record<string, string[]>> = {
+  GDP_GROWTH: ["FRED for U.S. quarterly proxies where configured", "World Bank annual GDP growth", "OECD Data Explorer where mapped", "IMF DataMapper optional/secondary", "Demo fallback"],
+  CPI: ["FRED for U.S. inflation where configured", "BLS for U.S. CPI where configured", "OECD Data Explorer where mapped", "IMF DataMapper optional/secondary", "Demo fallback"],
+  UNEMPLOYMENT: ["FRED for U.S. unemployment where configured", "BLS for U.S. unemployment where configured", "OECD Data Explorer where mapped", "IMF DataMapper optional/secondary", "Demo fallback"],
+  POLICY_RATE: ["FRED for U.S. rates where configured", "Bank of Canada for Canadian rates", "BIS/OECD where mapped", "Demo fallback"],
+  YIELD_10Y: ["FRED for U.S. 10-year yields where configured", "OECD Data Explorer where mapped", "Demo fallback"],
+  CURRENT_ACCOUNT: ["World Bank annual current-account indicators", "IMF DataMapper optional/secondary", "Demo fallback"]
+};
 
 function envValue(name: string) {
   return process.env[name]?.trim();
@@ -637,13 +647,33 @@ export class ImfAdapter implements DataAdapter {
 
     try {
       const response = await fetchWithRetry(endpoint, {
-        headers: { Accept: "application/json" },
+        headers: {
+          Accept: "application/json",
+          "User-Agent": "Mozilla/5.0 compatible research dashboard"
+        },
         next: { revalidate: 60 * 60 * 24 }
-      });
+      }, 1);
       const httpStatus = responseStatusText(response);
       const contentType = responseContentType(response);
       const body = await response.text();
       const bodyPreview = responsePreview(body);
+
+      if (response.status === 403) {
+        return {
+          rows: [],
+          error: IMF_BLOCKED_MESSAGE,
+          endpoint,
+          seriesId: mappedSeries.seriesId,
+          unit: mappedSeries.unit,
+          indicatorName: mappedSeries.indicatorName,
+          country: mappedCountry,
+          statusCategory: "access-restricted",
+          httpStatus,
+          responseContentType: contentType,
+          responseBodyPreview: bodyPreview,
+          fallbackReason: IMF_BLOCKED_MESSAGE
+        };
+      }
 
       if (!response.ok) {
         const fallbackReason = `IMF DataMapper returned ${httpStatus} for ${mappedSeries.seriesId}/${mappedCountry}. Demo fallback is active.`;
@@ -747,7 +777,12 @@ export class ImfAdapter implements DataAdapter {
   }
 
   async healthCheck(): Promise<AdapterHealth> {
-    const results = await Promise.all(this.healthIndicatorIds.map((indicatorId) => this.fetchLiveSeries({ countryCode: "US", indicatorId })));
+    const primaryResult = await this.fetchLiveSeries({ countryCode: "US", indicatorId: "GDP_GROWTH" });
+    const remainingResults =
+      primaryResult.statusCategory === "access-restricted"
+        ? []
+        : await Promise.all(this.healthIndicatorIds.filter((indicatorId) => indicatorId !== "GDP_GROWTH").map((indicatorId) => this.fetchLiveSeries({ countryCode: "US", indicatorId })));
+    const results = [primaryResult, ...remainingResults];
     const successfulResult = results.find((result) => result.rows.length);
     const result = successfulResult ?? results[0];
     const metadata = latestMetadata(result?.rows ?? [], result?.endpoint ?? this.endpoint("NGDP_RPCH", "USA"), result?.seriesId ?? "NGDP_RPCH", result?.unit ?? "% y/y");
@@ -781,11 +816,14 @@ export class ImfAdapter implements DataAdapter {
         latestObservation,
         parserError: result?.parserError,
         fallbackReason: result?.fallbackReason,
-        adapterDetails: results.map((item) => {
-          const latest = item.rows.at(-1);
-          const status = latest ? `latest ${latest.date} = ${latest.value}${latest.unit ? ` ${latest.unit}` : ""}` : item.fallbackReason ?? item.error ?? "No details returned.";
-          return `${item.indicatorName ?? item.seriesId ?? "IMF indicator"}: ${item.statusCategory} - ${status}`;
-        })
+        adapterDetails: [
+          "Alternative source strategy: prefer FRED for U.S. GDP growth, inflation, unemployment, and rates; World Bank for annual international macro indicators; OECD where mapped; IMF remains optional/secondary.",
+          ...results.map((item) => {
+            const latest = item.rows.at(-1);
+            const status = latest ? `latest ${latest.date} = ${latest.value}${latest.unit ? ` ${latest.unit}` : ""}` : item.fallbackReason ?? item.error ?? "No details returned.";
+            return `${item.indicatorName ?? item.seriesId ?? "IMF indicator"}: ${item.statusCategory} - ${status}`;
+          })
+        ]
       }
     );
   }
@@ -1373,15 +1411,15 @@ class EiaAdapter extends KeyedAdapter {
 
 export const dataAdapters: DataAdapter[] = [
   new DemoDataAdapter(),
+  new FredAdapter(),
+  new BlsAdapter(),
   new WorldBankAdapter(),
+  new OecdAdapter(),
   new BankOfCanadaAdapter(),
   new StatCanAdapter(),
   new EcbEurostatAdapter(),
-  new ImfAdapter(),
-  new OecdAdapter(),
   new BisAdapter(),
-  new FredAdapter(),
-  new BlsAdapter(),
+  new ImfAdapter(),
   new BeaAdapter(),
   new EiaAdapter()
 ];
