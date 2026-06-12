@@ -73,15 +73,15 @@ export default async function DataSourcesPage() {
                     <p>Country: {source.country ?? "N/A"}</p>
                     <p>Source name: {source.sourceName ?? source.name}</p>
                     <p>Endpoint: {source.endpoint ?? "N/A"}</p>
-                    <p>Copied OECD URL: {source.developerApiDataUrl ?? "N/A"}</p>
-                    <p>Example OECD URL: {source.exampleDeveloperApiDataUrl ?? "N/A"}</p>
+                    <p>Developer data URL: {source.developerApiDataUrl ?? "N/A"}</p>
+                    <p>Example data URL: {source.exampleDeveloperApiDataUrl ?? "N/A"}</p>
                     <p>Series: {source.seriesId ?? "N/A"}</p>
                     <p>Date: {source.latestDataDate ?? "N/A"}</p>
                     <p>Unit: {source.unit ?? "N/A"}</p>
                     <p>Live/demo status: {source.liveDemoStatus ?? source.mode}</p>
                     <p>HTTP status: {source.httpStatus ?? "N/A"}</p>
                     <p>Content type: {source.responseContentType ?? "N/A"}</p>
-                    <p>CSV headers: {source.detectedCsvHeaders?.length ? source.detectedCsvHeaders.join(", ") : "N/A"}</p>
+                    <p>Detected headers: {source.detectedCsvHeaders?.length ? source.detectedCsvHeaders.join(", ") : "N/A"}</p>
                     <p>
                       Latest observation:{" "}
                       {source.latestObservation
