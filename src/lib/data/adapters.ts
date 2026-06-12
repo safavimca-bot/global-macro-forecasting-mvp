@@ -191,6 +191,14 @@ function responseStatusText(response: Response) {
   return `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`;
 }
 
+function responsePreview(body: string) {
+  return body.trim().slice(0, 500);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 function freshOecdUrlInstruction(indicatorName: string) {
   return `Selected series URL may be invalid. Please copy a fresh OECD Developer API Flat Data query URL for ${indicatorName}: OECD Data Explorer -> select indicator filters -> Developer API -> Flat -> Copy code.`;
 }
@@ -466,8 +474,18 @@ export class EcbEurostatAdapter implements DataAdapter {
   }
 }
 
+type ImfSeriesMapping = {
+  indicatorId: string;
+  indicatorName: string;
+  seriesId: string;
+  unit: string;
+  frequency: Frequency;
+};
+
 export class ImfAdapter implements DataAdapter {
   name = "IMF Data";
+
+  private baseUrl = "https://www.imf.org/external/datamapper/api/v1/";
 
   private countryMap: Partial<Record<CountryCode, string>> = {
     US: "USA",
@@ -482,56 +500,245 @@ export class ImfAdapter implements DataAdapter {
     MX: "MEX"
   };
 
-  private seriesMap: Partial<Record<string, { seriesId: string; unit: string; frequency: Frequency }>> = {
-    GDP_GROWTH: { seriesId: "NGDP_RPCH", unit: "% y/y", frequency: "annual" },
-    CPI: { seriesId: "PCPIPCH", unit: "% y/y", frequency: "annual" },
-    UNEMPLOYMENT: { seriesId: "LUR", unit: "%", frequency: "annual" },
-    CURRENT_ACCOUNT: { seriesId: "BCA_NGDPD", unit: "% of GDP", frequency: "annual" }
+  private seriesMap: Partial<Record<string, ImfSeriesMapping>> = {
+    GDP_GROWTH: { indicatorId: "GDP_GROWTH", indicatorName: "Real GDP growth", seriesId: "NGDP_RPCH", unit: "% y/y", frequency: "annual" },
+    CPI: { indicatorId: "CPI", indicatorName: "Inflation", seriesId: "PCPIPCH", unit: "% y/y", frequency: "annual" },
+    UNEMPLOYMENT: { indicatorId: "UNEMPLOYMENT", indicatorName: "Unemployment rate", seriesId: "LUR", unit: "%", frequency: "annual" },
+    CURRENT_ACCOUNT: { indicatorId: "CURRENT_ACCOUNT", indicatorName: "Current account balance", seriesId: "BCA_NGDPD", unit: "% of GDP", frequency: "annual" }
   };
 
+  private healthIndicatorIds = ["GDP_GROWTH", "CPI", "UNEMPLOYMENT", "CURRENT_ACCOUNT"];
+
   private endpoint(seriesId: string, countryCode: string) {
-    return `https://www.imf.org/external/datamapper/api/v1/${seriesId}/${countryCode}`;
+    return `${this.baseUrl}${seriesId}/${countryCode}`;
   }
 
-  async fetchSeries(params: DataAdapterParams): Promise<Observation[]> {
+  private parseJsonResponse(body: string) {
+    try {
+      return { payload: JSON.parse(body) as unknown };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown JSON parse error.";
+      return { parserError: `IMF response was not valid JSON: ${message}` };
+    }
+  }
+
+  private dataMapFromPayload(payload: unknown, seriesId: string, countryCode: string) {
+    if (!isRecord(payload)) {
+      return undefined;
+    }
+
+    const values = isRecord(payload.values) ? payload.values : undefined;
+
+    if (!values) {
+      return undefined;
+    }
+
+    const seriesFirst = isRecord(values[seriesId]) ? values[seriesId] : undefined;
+    const countryFirst = isRecord(values[countryCode]) ? values[countryCode] : undefined;
+    const seriesCountryValues = seriesFirst && isRecord(seriesFirst[countryCode]) ? seriesFirst[countryCode] : undefined;
+    const countrySeriesValues = countryFirst && isRecord(countryFirst[seriesId]) ? countryFirst[seriesId] : undefined;
+
+    if (seriesCountryValues) {
+      return seriesCountryValues;
+    }
+
+    if (countrySeriesValues) {
+      return countrySeriesValues;
+    }
+
+    if (seriesFirst && Object.values(seriesFirst).some((value) => typeof value === "number" || typeof value === "string" || value === null)) {
+      return seriesFirst;
+    }
+
+    return undefined;
+  }
+
+  private parseDataMapperJson(payload: unknown, params: DataAdapterParams, mappedCountry: string, mappedSeries: ImfSeriesMapping, endpoint: string) {
+    const values = this.dataMapFromPayload(payload, mappedSeries.seriesId, mappedCountry);
+    const lastUpdated = new Date().toISOString();
+
+    if (!values) {
+      return {
+        rows: [],
+        parserError: `IMF DataMapper response did not include values for series ${mappedSeries.seriesId} and country ${mappedCountry}.`
+      };
+    }
+
+    const rows = Object.entries(values)
+      .filter(([, value]) => value !== null && value !== undefined && value !== "")
+      .map(([date, value]): Observation => ({
+        countryCode: params.countryCode,
+        indicatorId: params.indicatorId,
+        indicatorName: mappedSeries.indicatorName,
+        country: mappedCountry,
+        date,
+        value: Number(String(value).replace(/,/g, "")),
+        source: "IMF DataMapper API",
+        sourceName: "IMF DataMapper API",
+        endpoint,
+        seriesId: mappedSeries.seriesId,
+        unit: mappedSeries.unit,
+        frequency: mappedSeries.frequency,
+        isDemo: false,
+        liveDemoStatus: "live",
+        lastUpdated
+      }))
+      .filter((row) => row.date && Number.isFinite(row.value))
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    if (!rows.length) {
+      return {
+        rows,
+        parserError: `IMF DataMapper response included ${mappedSeries.seriesId}/${mappedCountry}, but no numeric observations were found.`
+      };
+    }
+
+    return { rows };
+  }
+
+  private async fetchLiveSeries(
+    params: DataAdapterParams
+  ): Promise<{
+    rows: Observation[];
+    error?: string;
+    endpoint?: string;
+    seriesId?: string;
+    unit?: string;
+    indicatorName?: string;
+    country?: string;
+    statusCategory: AdapterStatusCategory;
+    httpStatus?: string;
+    responseContentType?: string;
+    responseBodyPreview?: string;
+    parserError?: string;
+    fallbackReason?: string;
+    latestObservation?: AdapterHealth["latestObservation"];
+  }> {
     const mappedCountry = this.countryMap[params.countryCode];
     const mappedSeries = this.seriesMap[params.indicatorId];
 
     if (!mappedCountry || !mappedSeries) {
-      return [];
+      const missingPart = !mappedSeries ? `indicator ${params.indicatorId}` : `country ${params.countryCode}`;
+      const fallbackReason = `IMF DataMapper mapping is missing for ${missingPart}. Demo fallback is active.`;
+      return {
+        rows: [],
+        error: fallbackReason,
+        endpoint: mappedSeries && mappedCountry ? this.endpoint(mappedSeries.seriesId, mappedCountry) : this.baseUrl,
+        seriesId: mappedSeries?.seriesId ?? params.indicatorId,
+        unit: mappedSeries?.unit,
+        indicatorName: mappedSeries?.indicatorName ?? params.indicatorId,
+        country: mappedCountry ?? params.countryCode,
+        statusCategory: "mapping-error",
+        fallbackReason
+      };
     }
+
+    const endpoint = this.endpoint(mappedSeries.seriesId, mappedCountry);
 
     try {
-      const response = await fetchWithRetry(this.endpoint(mappedSeries.seriesId, mappedCountry), {
+      const response = await fetchWithRetry(endpoint, {
+        headers: { Accept: "application/json" },
         next: { revalidate: 60 * 60 * 24 }
       });
+      const httpStatus = responseStatusText(response);
+      const contentType = responseContentType(response);
+      const body = await response.text();
+      const bodyPreview = responsePreview(body);
 
       if (!response.ok) {
-        return [];
+        const fallbackReason = `IMF DataMapper returned ${httpStatus} for ${mappedSeries.seriesId}/${mappedCountry}. Demo fallback is active.`;
+        return {
+          rows: [],
+          error: fallbackReason,
+          endpoint,
+          seriesId: mappedSeries.seriesId,
+          unit: mappedSeries.unit,
+          indicatorName: mappedSeries.indicatorName,
+          country: mappedCountry,
+          statusCategory: "mapping-error",
+          httpStatus,
+          responseContentType: contentType,
+          responseBodyPreview: bodyPreview,
+          fallbackReason
+        };
       }
 
-      const payload = (await response.json()) as {
-        values?: Record<string, Record<string, Record<string, number | string | null>>>;
-      };
-      const values = payload.values?.[mappedSeries.seriesId]?.[mappedCountry] ?? {};
+      const parsedJson = this.parseJsonResponse(body);
 
-      return Object.entries(values)
-        .filter(([, value]) => value !== null && value !== undefined && value !== "")
-        .map(([date, value]) => ({
-          countryCode: params.countryCode,
-          indicatorId: params.indicatorId,
-          date,
-          value: Number(value),
-          source: "IMF DataMapper API",
-          frequency: mappedSeries.frequency,
-          isDemo: false,
-          lastUpdated: new Date().toISOString()
-        }))
-        .filter((row) => Number.isFinite(row.value))
-        .sort((a, b) => a.date.localeCompare(b.date));
-    } catch {
-      return [];
+      if (parsedJson.parserError) {
+        const fallbackReason = `IMF DataMapper returned ${httpStatus}, but JSON parsing failed. Demo fallback is active.`;
+        return {
+          rows: [],
+          error: fallbackReason,
+          endpoint,
+          seriesId: mappedSeries.seriesId,
+          unit: mappedSeries.unit,
+          indicatorName: mappedSeries.indicatorName,
+          country: mappedCountry,
+          statusCategory: "parser-error",
+          httpStatus,
+          responseContentType: contentType,
+          responseBodyPreview: bodyPreview,
+          parserError: parsedJson.parserError,
+          fallbackReason
+        };
+      }
+
+      const parsed = this.parseDataMapperJson(parsedJson.payload, params, mappedCountry, mappedSeries, endpoint);
+
+      if (parsed.parserError) {
+        const fallbackReason = `IMF DataMapper returned ${httpStatus}, but parsing failed: ${parsed.parserError} Demo fallback is active.`;
+        return {
+          rows: [],
+          error: fallbackReason,
+          endpoint,
+          seriesId: mappedSeries.seriesId,
+          unit: mappedSeries.unit,
+          indicatorName: mappedSeries.indicatorName,
+          country: mappedCountry,
+          statusCategory: "parser-error",
+          httpStatus,
+          responseContentType: contentType,
+          responseBodyPreview: bodyPreview,
+          parserError: parsed.parserError,
+          fallbackReason
+        };
+      }
+
+      const latest = parsed.rows.at(-1);
+
+      return {
+        rows: parsed.rows,
+        endpoint,
+        seriesId: mappedSeries.seriesId,
+        unit: mappedSeries.unit,
+        indicatorName: mappedSeries.indicatorName,
+        country: mappedCountry,
+        statusCategory: "healthy",
+        httpStatus,
+        responseContentType: contentType,
+        latestObservation: latest ? { date: latest.date, value: latest.value, unit: latest.unit } : undefined
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown IMF network error.";
+      const fallbackReason = `IMF DataMapper fetch failed for ${mappedSeries.seriesId}/${mappedCountry}: ${message}. Demo fallback is active.`;
+
+      return {
+        rows: [],
+        error: fallbackReason,
+        endpoint,
+        seriesId: mappedSeries.seriesId,
+        unit: mappedSeries.unit,
+        indicatorName: mappedSeries.indicatorName,
+        country: mappedCountry,
+        statusCategory: "network-error",
+        fallbackReason
+      };
     }
+  }
+
+  async fetchSeries(params: DataAdapterParams): Promise<Observation[]> {
+    return (await this.fetchLiveSeries(params)).rows;
   }
 
   async searchIndicators(query: string): Promise<Indicator[]> {
@@ -540,18 +747,46 @@ export class ImfAdapter implements DataAdapter {
   }
 
   async healthCheck(): Promise<AdapterHealth> {
-    const endpoint = this.endpoint("NGDP_RPCH", "USA");
-    const rows = await this.fetchSeries({ countryCode: "US", indicatorId: "GDP_GROWTH" });
-    const metadata = latestMetadata(rows, endpoint, "NGDP_RPCH", "% y/y");
+    const results = await Promise.all(this.healthIndicatorIds.map((indicatorId) => this.fetchLiveSeries({ countryCode: "US", indicatorId })));
+    const successfulResult = results.find((result) => result.rows.length);
+    const result = successfulResult ?? results[0];
+    const metadata = latestMetadata(result?.rows ?? [], result?.endpoint ?? this.endpoint("NGDP_RPCH", "USA"), result?.seriesId ?? "NGDP_RPCH", result?.unit ?? "% y/y");
+    const now = new Date().toISOString();
+    const latestObservation =
+      result?.latestObservation ?? (result?.rows.at(-1) ? { date: result.rows.at(-1)!.date, value: result.rows.at(-1)!.value, unit: result.rows.at(-1)!.unit } : undefined);
+    const notes = result?.rows.length ? "Live IMF DataMapper API loaded and parsed. Demo fallback remains available." : (result?.fallbackReason ?? result?.error ?? "IMF live data did not load. Demo fallback is active.");
 
     return health(
       this.name,
-      rows.length ? "healthy" : "degraded",
+      result?.rows.length ? "healthy" : "degraded",
       "annual",
       "No-key IMF DataMapper indicators for GDP growth, inflation, unemployment, and current account where covered",
-      rows.length ? "Live IMF data loaded. Demo fallback remains available." : "Live IMF data did not load. Demo fallback is active.",
-      rows.length ? "live" : "demo",
-      metadata
+      notes,
+      result?.rows.length ? "live" : "demo",
+      {
+        ...metadata,
+        statusCategory: result?.statusCategory ?? "degraded",
+        indicatorName: result?.indicatorName ?? "Real GDP growth",
+        country: result?.country ?? "USA",
+        sourceName: "IMF DataMapper API",
+        endpoint: result?.endpoint ?? metadata.endpoint,
+        seriesId: result?.seriesId ?? metadata.seriesId,
+        latestDataDate: metadata.latestDataDate,
+        unit: result?.unit ?? metadata.unit,
+        liveDemoStatus: result?.rows.length ? "live" : "demo",
+        lastUpdated: metadata.lastUpdated ?? now,
+        httpStatus: result?.httpStatus,
+        responseContentType: result?.responseContentType,
+        responseBodyPreview: result?.responseBodyPreview,
+        latestObservation,
+        parserError: result?.parserError,
+        fallbackReason: result?.fallbackReason,
+        adapterDetails: results.map((item) => {
+          const latest = item.rows.at(-1);
+          const status = latest ? `latest ${latest.date} = ${latest.value}${latest.unit ? ` ${latest.unit}` : ""}` : item.fallbackReason ?? item.error ?? "No details returned.";
+          return `${item.indicatorName ?? item.seriesId ?? "IMF indicator"}: ${item.statusCategory} - ${status}`;
+        })
+      }
     );
   }
 }
