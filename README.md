@@ -75,7 +75,7 @@ Implemented adapters:
 - BEA API health check
 - EIA API health check
 
-No-key public APIs load live where mappings and network access are available. Key-based APIs use the environment variables listed above. If a key or live mapping is missing, the app keeps working with clearly labeled demo fallback data.
+No-key public APIs load live where mappings and network access are available. Key-based APIs use the environment variables listed above. If a key or live mapping is missing, or a remote source blocks server access, the app keeps working with clearly labeled demo fallback data. For overlapping U.S. indicators, prefer FRED/BLS and World Bank/OECD where available; IMF DataMapper remains optional/secondary because some server hosts may receive HTTP 403 from IMF.
 
 ## Adding a New Data Source
 
