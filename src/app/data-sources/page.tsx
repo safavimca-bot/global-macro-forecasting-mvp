@@ -1,7 +1,9 @@
 import { Database } from "lucide-react";
+import { ExportMenu, ExportNotice } from "@/components/export-menu";
 import { Panel } from "@/components/panel";
 import { SectionHeading } from "@/components/section-heading";
 import { getDataSourceHealth, sourceCoverageRows } from "@/lib/data/service";
+import { adapterHealthExportRows } from "@/lib/export/page-data";
 
 export const dynamic = "force-dynamic";
 
@@ -20,6 +22,7 @@ function statusClass(status: "healthy" | "degraded" | "unavailable") {
 export default async function DataSourcesPage() {
   const health = await getDataSourceHealth();
   const coverage = sourceCoverageRows();
+  const healthRows = adapterHealthExportRows(health);
 
   return (
     <div className="space-y-6">
@@ -28,6 +31,23 @@ export default async function DataSourcesPage() {
         title="Data sources and coverage"
         copy="Every dashboard element carries a source label, freshness timestamp, frequency, and demo/live state. API keys are read server-side only."
       />
+
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-white/10 bg-white/[0.03] p-4">
+        <ExportNotice />
+        <ExportMenu
+          label="Adapter health table"
+          data={healthRows}
+          filenameBase="adapter-health"
+          metadata={{
+            title: "Adapter health export",
+            module: "Data Sources / Adapter Health",
+            indicatorNames: ["Adapter status", "Live metadata", "Fallback diagnostics"],
+            units: ["mixed"],
+            dataStatus: health.some((source) => source.status === "healthy") ? "mixed" : "degraded",
+            notes: "API keys are never included in exports."
+          }}
+        />
+      </div>
 
       <div className="grid gap-3 md:grid-cols-3">
         <div className="rounded-md border border-signal-green/30 bg-signal-green/10 p-4">
@@ -44,7 +64,24 @@ export default async function DataSourcesPage() {
         </div>
       </div>
 
-      <Panel title="Adapter health">
+      <Panel
+        title="Adapter health"
+        action={
+          <ExportMenu
+            label="Adapter health table"
+            data={healthRows}
+            filenameBase="adapter-health"
+            metadata={{
+              title: "Adapter health table",
+              module: "Data Sources / Adapter Health",
+              indicatorNames: ["Adapter status", "HTTP status", "Parser error", "Fallback reason"],
+              units: ["mixed"],
+              dataStatus: health.some((source) => source.status === "healthy") ? "mixed" : "degraded",
+              notes: "Source metadata is exported without API keys or secrets."
+            }}
+          />
+        }
+      >
         <div className="overflow-hidden rounded-md border border-white/10">
           <table className="w-full border-collapse text-left text-sm">
             <thead className="bg-white/[0.06] text-xs uppercase tracking-wide text-slate-400">
